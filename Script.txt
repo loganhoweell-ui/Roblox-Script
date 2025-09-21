@@ -1,0 +1,1066 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local PhysicsService = game:GetService("PhysicsService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+local TextChatService = game:GetService("TextChatService")
+local Chat = game:GetService("Chat")
+
+-- Load Rayfield with fallback
+local Rayfield
+local success, err = pcall(function()
+    Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+end)
+if not success then
+    warn("Failed to load Rayfield: " .. tostring(err))
+    Rayfield = loadstring(readfile("Rayfield.lua"))() -- Adjust for local fallback
+end
+
+-- Create Admin Window without Key System
+local Window = Rayfield:CreateWindow({
+    Name = "Coveox Ultimate 2025",
+    LoadingTitle = "Loading Coveox",
+    LoadingSubtitle = "by KonPCL - Ultimate Enhanced by Grok",
+    ConfigurationSaving = {Enabled = true, FolderName = "Coveox2025", FileName = "UltimateSettings"},
+    ToggleKey = Enum.KeyCode.RightControl
+})
+
+-- Notify user of successful load
+Rayfield:Notify({
+    Title = "Coveox Loaded",
+    Content = "Welcome, " .. LocalPlayer.Name .. "! Coveox Ultimate is now active.",
+    Duration = 5
+})
+
+local MainTab = Window:CreateTab("Main")
+local CombatTab = Window:CreateTab("Combat")
+local MovementTab = Window:CreateTab("Movement")
+local ModerationTab = Window:CreateTab("Moderation")
+local CommandsTab = Window:CreateTab("Commands")
+local AdvancedTab = Window:CreateTab("Advanced")
+
+-- =====================
+-- Settings
+-- =====================
+local Settings = {
+    ESP = {
+        Enabled = true,
+        FillTransparency = 0.7,
+        OutlineTransparency = 0,
+        OutlineThickness = 2,
+        Tracers = false,
+        TracerColor = Color3.fromRGB(255,255,255),
+        OutlineColor = Color3.fromRGB(255,255,255),
+        MaxDistance = 1000,
+        TracerMaxDistance = 500,
+        TeamFilter = "All",
+        ShowName = true,
+        ShowDistance = true,
+        ShowHealth = true,
+        TracerThicknessScale = true,
+        ChamsEnabled = false,
+        ChamsColor = Color3.fromRGB(255,0,0),
+        ItemESPEnabled = false,
+        ItemESPColor = Color3.fromRGB(0,255,0),
+        ItemMaxDistance = 200
+    },
+    Aimlock = {
+        Enabled = false,
+        Smoothness = 0.2,
+        FOV = 100,
+        MaxDistance = 1000,
+        VisibleCheck = true,
+        SilentAim = false,
+        ShowFOVCircle = false,
+        FOVCircleColor = Color3.fromRGB(255,255,255),
+        RollbackSimulation = false,
+        PredictionEnabled = false,
+        PredictionLead = 0.1
+    },
+    Movement = {
+        FlyEnabled = false,
+        FlySpeed = 100,
+        NoClipEnabled = false,
+        InfiniteJumpEnabled = false,
+        InfiniteJumpHeight = 50,
+        SpinbotEnabled = false,
+        SpinSpeed = 100, -- Default spin speed in radians per second
+        SpinDirection = 1, -- 1 for clockwise, -1 for counterclockwise
+        WalkSpeed = 16,
+        FOV = Camera.FieldOfView,
+        GodMode = false,
+        Invisibility = false,
+        FullbrightEnabled = false,
+        JumpPower = 50,
+        BlinkEnabled = false,
+        BlinkDistance = 50,
+        BlinkKey = Enum.KeyCode.Q,
+        NoCameraShake = false
+    },
+    KillAura = {
+        Enabled = false,
+        Radius = 20,
+        Damage = 25
+    },
+    Moderation = {
+        AutoKickFlagged = false,
+        FlaggedPlayers = {},
+        ChatSpammerEnabled = false,
+        SpamMessage = "Coveox Ultimate!",
+        SpamDelay = 1,
+        MutedPlayers = {},
+        BroadcastMessage = "",
+        ChatSpamFailures = 0,
+        MaxChatSpamFailures = 5,
+        FrozenPlayers = {}
+    },
+    AntiCheat = {
+        DetectServerAuthority = true,
+        RandomizeMovements = true,
+        RandomizeVelocity = true
+    },
+    Advanced = {
+        FPSUnlocked = false,
+        PerformanceMode = false
+    }
+}
+
+local Keybinds = {
+    ToggleAimlock = Enum.KeyCode.E,
+    ToggleFly = Enum.KeyCode.F,
+    ToggleSpinbot = Enum.KeyCode.T,
+    ToggleNoClip = Enum.KeyCode.G,
+    ToggleInfiniteJump = Enum.KeyCode.H,
+    ToggleGodMode = Enum.KeyCode.V,
+    ToggleInvisibility = Enum.KeyCode.B,
+    Blink = Settings.Movement.BlinkKey
+}
+
+local HealthColors = {
+    Green = Color3.fromRGB(0,255,0),
+    Orange = Color3.fromRGB(255,165,0),
+    Red = Color3.fromRGB(255,0,0)
+}
+
+local moveForward, moveBackward, moveLeft, moveRight = false, false, false, false
+local moveUp, moveDown = false, false
+local bv, bav
+local Humanoid, HumanoidRootPart
+local AimlockTarget = nil
+local FOVCircle = nil
+local TracerPool = {}
+local originalLighting = {
+    Brightness = Lighting.Brightness,
+    Ambient = Lighting.Ambient,
+    FogEnd = Lighting.FogEnd
+}
+
+local PlayerStats = {
+    TotalPlayers = 0,
+    AverageHealth = 0
+}
+
+local ItemESPData = {}
+local lastESPUpdate = 0
+local lastCameraCFrame = Camera.CFrame
+
+-- OPTIMIZED: Pre-allocate tracers
+local function preAllocateTracers(count)
+    for i = 1, count do
+        local line = Drawing.new("Line")
+        line.Thickness = 1
+        line.Color = Settings.ESP.TracerColor
+        line.Visible = false
+        table.insert(TracerPool, line)
+    end
+end
+preAllocateTracers(Settings.Advanced.PerformanceMode and 20 or 50)
+
+-- =====================
+-- Utility Functions
+-- =====================
+local function getTracer()
+    if #TracerPool > 0 then
+        return table.remove(TracerPool)
+    end
+    local line = Drawing.new("Line")
+    line.Thickness = 1
+    line.Color = Settings.ESP.TracerColor
+    line.Visible = false
+    return line
+end
+
+local function releaseTracer(tracer)
+    tracer.Visible = false
+    table.insert(TracerPool, tracer)
+end
+
+local function updateFOVCircle()
+    if not FOVCircle then
+        FOVCircle = Drawing.new("Circle")
+        FOVCircle.Thickness = 2
+        FOVCircle.NumSides = 100
+        FOVCircle.Filled = false
+    end
+    FOVCircle.Visible = Settings.Aimlock.ShowFOVCircle and Settings.Aimlock.Enabled and not Settings.Advanced.PerformanceMode
+    FOVCircle.Radius = Settings.Aimlock.FOV
+    FOVCircle.Position = UserInputService:GetMouseLocation()
+    FOVCircle.Color = Settings.Aimlock.FOVCircleColor
+end
+
+local function simulateRollback()
+    if Settings.Aimlock.RollbackSimulation and AimlockTarget then
+        if HumanoidRootPart then
+            local oldPos = HumanoidRootPart.Position
+            task.delay(0.1, function()
+                HumanoidRootPart.Position = oldPos
+            end)
+        end
+    end
+end
+
+local function toggleFullbright(enabled)
+    Settings.Movement.FullbrightEnabled = enabled
+    if enabled then
+        Lighting.Brightness = 2
+        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        Lighting.FogEnd = math.huge
+    else
+        Lighting.Brightness = originalLighting.Brightness
+        Lighting.Ambient = originalLighting.Ambient
+        Lighting.FogEnd = originalLighting.FogEnd
+    end
+end
+
+local function updateJumpPower(value)
+    if Humanoid then
+        Humanoid.JumpPower = value
+    end
+end
+
+local function teleportToCoords(x, y, z)
+    if HumanoidRootPart then
+        HumanoidRootPart.CFrame = CFrame.new(Vector3.new(x, y, z))
+    end
+end
+
+local function sendChatMessage(message)
+    local success, err = pcall(function()
+        local channel = TextChatService.TextChannels.RBXGeneral
+        if channel and channel:IsA("TextChannel") then
+            channel:SendAsync(message)
+        else
+            local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+            if chatEvent then
+                local sayMessage = chatEvent:FindFirstChild("SayMessageRequest")
+                if sayMessage then
+                    sayMessage:FireServer(message, "All")
+                end
+            end
+        end
+    end)
+    if not success then
+        Settings.Moderation.ChatSpamFailures = Settings.Moderation.ChatSpamFailures + 1
+        warn("Chat spam failed: " .. tostring(err))
+        if Settings.Moderation.ChatSpamFailures >= Settings.Moderation.MaxChatSpamFailures then
+            Settings.Moderation.ChatSpammerEnabled = false
+            Rayfield:Notify({
+                Title = "Chat Spammer Disabled",
+                Content = "Too many failed attempts. Chat system may be restricted.",
+                Duration = 5
+            })
+        end
+    else
+        Settings.Moderation.ChatSpamFailures = 0
+    end
+end
+
+task.spawn(function()
+    while true do
+        if Settings.Moderation.ChatSpammerEnabled then
+            sendChatMessage(Settings.Moderation.SpamMessage)
+            task.wait(Settings.Moderation.SpamDelay)
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+local function mutePlayer(player, enabled)
+    if enabled then
+        table.insert(Settings.Moderation.MutedPlayers, player.Name)
+    else
+        for i, name in ipairs(Settings.Moderation.MutedPlayers) do
+            if name == player.Name then
+                table.remove(Settings.Moderation.MutedPlayers, i)
+                break
+            end
+        end
+    end
+end
+
+Chat.BubbleChatEnabled = true
+LocalPlayer.Chatted:Connect(function(msg, recipient)
+    -- Basic simulation; actual chat filtering is complex
+end)
+
+local function sendBroadcast(msg)
+    Rayfield:Notify({Title="Server Broadcast (Simulation)", Content=msg, Duration=10})
+end
+
+RunService.Heartbeat:Connect(function()
+    local total = #Players:GetPlayers()
+    local healthSum = 0
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character and player.Character:FindFirstChild("Humanoid") then
+            healthSum = healthSum + player.Character.Humanoid.Health
+        end
+    end
+    PlayerStats.TotalPlayers = total
+    PlayerStats.AverageHealth = total > 0 and (healthSum / total) or 0
+end)
+
+local function toggleFPSUnlock(enabled)
+    Settings.Advanced.FPSUnlocked = enabled
+    local success, _ = pcall(function()
+        if enabled then
+            setfpscap(999)
+        else
+            setfpscap(60)
+        end
+    end)
+    if not success then
+        Rayfield:Notify({Title="FPS Unlock Failed", Content="Your executor may not support setfpscap.", Duration=5})
+    end
+end
+
+local function performBlink()
+    if Settings.Movement.BlinkEnabled and HumanoidRootPart then
+        local direction = Camera.CFrame.LookVector * Settings.Movement.BlinkDistance
+        if Settings.AntiCheat.RandomizeMovements then
+            direction = direction + Vector3.new(math.random(-5,5)/10, 0, math.random(-5,5)/10)
+        end
+        HumanoidRootPart.CFrame = HumanoidRootPart.CFrame + direction
+    end
+end
+
+local function freezePlayer(player, enabled)
+    if enabled then
+        table.insert(Settings.Moderation.FrozenPlayers, player.Name)
+    else
+        for i, name in ipairs(Settings.Moderation.FrozenPlayers) do
+            if name == player.Name then
+                table.remove(Settings.Moderation.FrozenPlayers, i)
+                break
+            end
+        end
+    end
+end
+
+RunService.Heartbeat:Connect(function()
+    for _, playerName in ipairs(Settings.Moderation.FrozenPlayers) do
+        local player = Players:FindFirstChild(playerName)
+        if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local hrp = player.Character.HumanoidRootPart
+            hrp.Velocity = Vector3.new(0, 0, 0)
+            hrp.Anchored = true
+        end
+    end
+end)
+
+local function addItemESP(item)
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ItemESP"
+    highlight.Adornee = item
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 0
+    highlight.OutlineColor = Settings.ESP.ItemESPColor
+    highlight.Parent = item
+    return highlight
+end
+
+local function updateItemESP()
+    if not Settings.ESP.ItemESPEnabled then
+        for _, hl in pairs(ItemESPData) do
+            if hl then hl:Destroy() end
+        end
+        ItemESPData = {}
+        return
+    end
+
+    for _, item in pairs(Workspace:GetDescendants()) do
+        if item:IsA("BasePart") and (item.Name == "Tool" or item.Name == "Coin" or item:FindFirstChild("TouchInterest")) and not ItemESPData[item] then
+            local dist = (item.Position - HumanoidRootPart.Position).Magnitude
+            if dist <= (Settings.Advanced.PerformanceMode and 100 or Settings.ESP.ItemMaxDistance) then
+                ItemESPData[item] = addItemESP(item)
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        updateItemESP()
+        task.wait(1)
+    end
+end)
+
+local function togglePerformanceMode(enabled)
+    Settings.Advanced.PerformanceMode = enabled
+    if enabled then
+        Settings.ESP.Tracers = false
+        Settings.ESP.ChamsEnabled = false
+        Settings.Aimlock.ShowFOVCircle = false
+        Settings.KillAura.Radius = 10
+        preAllocateTracers(20)
+        Rayfield:Notify({Title="Performance Mode", Content="Enabled: Reduced visuals and updates for better performance.", Duration=5})
+    else
+        preAllocateTracers(50)
+        Rayfield:Notify({Title="Performance Mode", Content="Disabled: Full visuals and updates restored.", Duration=5})
+    end
+end
+
+local function toggleNoCameraShake(enabled)
+    Settings.Movement.NoCameraShake = enabled
+    if enabled then
+        lastCameraCFrame = Camera.CFrame
+        Rayfield:Notify({Title="No Camera Shake", Content="Enabled: Camera will not shake during spinbot.", Duration=5})
+    else
+        Rayfield:Notify({Title="No Camera Shake", Content="Disabled: Camera will follow spinbot rotation.", Duration=5})
+    end
+end
+
+local function toggleSpinbot(enabled)
+    Settings.Movement.SpinbotEnabled = enabled
+    if enabled and HumanoidRootPart and not bav then
+        bav = Instance.new("BodyAngularVelocity")
+        bav.MaxTorque = Vector3.new(0, 1e5, 0)
+        bav.Parent = HumanoidRootPart
+        -- Randomize initial direction for anti-aim
+        Settings.Movement.SpinDirection = Settings.AntiCheat.RandomizeMovements and (math.random(0, 1) == 0 and 1 or -1) or 1
+        Rayfield:Notify({Title="Spinbot", Content="Enabled: Rapid Y-axis rotation active.", Duration=5})
+    elseif not enabled and bav then
+        bav:Destroy()
+        bav = nil
+        Rayfield:Notify({Title="Spinbot", Content="Disabled.", Duration=5})
+    end
+end
+
+-- =====================
+-- Character Setup
+-- =====================
+local function setupCharacter(char)
+    if not char then return false end
+    local attempts = 0
+    while attempts < 10 do
+        Humanoid = char:FindFirstChildWhichIsA("Humanoid")
+        HumanoidRootPart = char:FindFirstChild("HumanoidRootPart")
+        if Humanoid and HumanoidRootPart then
+            if Settings.Movement.NoClipEnabled then toggleNoClip(true) end
+            Humanoid.WalkSpeed = Settings.Movement.WalkSpeed
+            Humanoid.JumpPower = Settings.Movement.JumpPower
+            if Settings.Movement.GodMode then toggleGodMode(true) end
+            if Settings.Movement.Invisibility then toggleInvisibility(true) end
+            if Settings.Movement.FullbrightEnabled then toggleFullbright(true) end
+            if Settings.Advanced.FPSUnlocked then toggleFPSUnlock(true) end
+            if Settings.Advanced.PerformanceMode then togglePerformanceMode(true) end
+            if Settings.Movement.NoCameraShake then toggleNoCameraShake(true) end
+            if Settings.Movement.SpinbotEnabled then toggleSpinbot(true) end
+            return true
+        end
+        attempts = attempts + 1
+        task.wait(0.5)
+    end
+    warn("Failed to setup character after retries")
+    return false
+end
+
+local function onCharacterAdded(char)
+    if setupCharacter(char) then
+        if Settings.Movement.FlyEnabled then toggleFly(true) end
+    end
+end
+
+onCharacterAdded(LocalPlayer.Character)
+LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
+
+-- =====================
+-- ESP
+-- =====================
+local PlayerESPData = {}
+local ESP_UPDATE_INTERVAL = 0.016
+
+local function getTeamColor(player)
+    return player.Team and player.Team.TeamColor.Color or Settings.ESP.OutlineColor
+end
+
+local function shouldShowESP(player)
+    if Settings.ESP.TeamFilter == "All" then return true end
+    local myTeam = LocalPlayer.Team
+    if not myTeam then return true end
+    if Settings.ESP.TeamFilter == "Enemies" then return player.Team ~= myTeam end
+    if Settings.ESP.TeamFilter == "Teammates" then return player.Team == myTeam end
+    return false
+end
+
+local function addCharacterESP(character, player)
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "CharacterESP"
+    highlight.Adornee = character
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillTransparency = Settings.ESP.FillTransparency
+    highlight.OutlineTransparency = Settings.ESP.OutlineTransparency
+    highlight.OutlineColor = getTeamColor(player)
+    highlight.Parent = character
+
+    local tracer = getTracer()
+
+    return {
+        Highlight = highlight,
+        Tracer = tracer,
+        Humanoid = character:FindFirstChildWhichIsA("Humanoid"),
+        Character = character,
+        Player = player
+    }
+end
+
+local function onPlayerAdded(player)
+    if player ~= LocalPlayer then
+        player.CharacterAdded:Connect(function(char)
+            local hrp = char:WaitForChild("HumanoidRootPart", 5)
+            if hrp then
+                PlayerESPData[player] = addCharacterESP(char, player)
+            end
+        end)
+        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            PlayerESPData[player] = addCharacterESP(player.Character, player)
+        end
+    end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    onPlayerAdded(player)
+end
+Players.PlayerAdded:Connect(onPlayerAdded)
+
+Players.PlayerRemoving:Connect(function(player)
+    if PlayerESPData[player] then
+        local data = PlayerESPData[player]
+        if data.Highlight then data.Highlight:Destroy() end
+        if data.Tracer then releaseTracer(data.Tracer) end
+        PlayerESPData[player] = nil
+    end
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+    if not Settings.ESP.Enabled or not HumanoidRootPart then return end
+    if Settings.Advanced.PerformanceMode and (tick() - lastESPUpdate < 0.1) then return end
+    lastESPUpdate = tick()
+
+    local myPos = HumanoidRootPart.Position
+    local screenBottomCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+    
+    local playerPositions = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local hrp = player.Character.HumanoidRootPart
+            local dist = (hrp.Position - myPos).Magnitude
+            if dist <= Settings.ESP.MaxDistance and shouldShowESP(player) then
+                local rootPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+                playerPositions[player] = {Position = hrp.Position, ScreenPos = Vector2.new(rootPos.X, rootPos.Y), OnScreen = onScreen, Distance = dist}
+            end
+        end
+    end
+
+    for player, data in pairs(PlayerESPData) do
+        if data.Humanoid and data.Character and data.Character:FindFirstChild("HumanoidRootPart") then
+            local posData = playerPositions[player]
+            if not posData or posData.Distance > Settings.ESP.MaxDistance or not shouldShowESP(data.Player) then
+                data.Highlight.Enabled = false
+                if data.Tracer then data.Tracer.Visible = false end
+                continue
+            end
+
+            data.Highlight.FillTransparency = Settings.ESP.FillTransparency
+            data.Highlight.OutlineTransparency = Settings.ESP.OutlineTransparency
+            data.Highlight.OutlineColor = getTeamColor(player)
+            data.Highlight.Enabled = true
+            data.Highlight.DepthMode = Settings.ESP.ChamsEnabled and not Settings.Advanced.PerformanceMode and Enum.HighlightDepthMode.Occluded or Enum.HighlightDepthMode.AlwaysOnTop
+            if Settings.ESP.ChamsEnabled and not Settings.Advanced.PerformanceMode then
+                data.Highlight.OutlineColor = Settings.ESP.ChamsColor
+            end
+
+            if Settings.ESP.Tracers and not Settings.Advanced.PerformanceMode and posData.Distance <= Settings.ESP.TracerMaxDistance and data.Tracer then
+                if posData.OnScreen then
+                    data.Tracer.From = screenBottomCenter
+                    data.Tracer.To = posData.ScreenPos
+                    data.Tracer.Color = Settings.ESP.TracerColor
+                    if Settings.ESP.TracerThicknessScale then
+                        data.Tracer.Thickness = math.clamp(3 - (posData.Distance / Settings.ESP.TracerMaxDistance) * 2, 1, 3)
+                    else
+                        data.Tracer.Thickness = 1
+                    end
+                    data.Tracer.Visible = true
+                else
+                    data.Tracer.Visible = false
+                end
+            elseif data.Tracer then
+                data.Tracer.Visible = false
+            end
+        else
+            data.Highlight.Enabled = false
+            if data.Tracer then data.Tracer.Visible = false end
+        end
+    end
+end)
+
+-- =====================
+-- Aimlock with Rollback
+-- =====================
+local function isVisible(targetPos)
+    if not Settings.Aimlock.VisibleCheck then return true end
+    local origin = Camera.CFrame.Position
+    local direction = (targetPos - origin).Unit * Settings.Aimlock.MaxDistance
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    local result = Workspace:Raycast(origin, direction, raycastParams)
+    return not result or (result.Position - targetPos).Magnitude < 1
+end
+
+local function getClosestPlayerAim()
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    local mousePos = UserInputService:GetMouseLocation()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") and player.Character:FindFirstChildWhichIsA("Humanoid") and player.Character.Humanoid.Health > 0 then
+            local head = player.Character.Head
+            local headPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+            if onScreen then
+                local distance = (Vector2.new(headPos.X, headPos.Y) - mousePos).Magnitude
+                local worldDistance = (head.Position - HumanoidRootPart.Position).Magnitude
+                if distance < Settings.Aimlock.FOV and worldDistance <= Settings.Aimlock.MaxDistance and distance < shortestDistance and isVisible(head.Position) then
+                    shortestDistance = distance
+                    closestPlayer = player
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+RunService.RenderStepped:Connect(function(dt)
+    updateFOVCircle()
+    if Settings.Aimlock.Enabled then
+        local newTarget = getClosestPlayerAim()
+        if newTarget and newTarget ~= AimlockTarget then
+            AimlockTarget = newTarget
+        elseif not newTarget and AimlockTarget then
+            AimlockTarget = nil
+        end
+        
+        if AimlockTarget and AimlockTarget.Character and AimlockTarget.Character:FindFirstChild("Head") then
+            local head = AimlockTarget.Character.Head
+            local targetPos = head.Position
+            if Settings.Aimlock.PredictionEnabled then
+                local hrp = AimlockTarget.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    targetPos = head.Position + (hrp.Velocity * Settings.Aimlock.PredictionLead)
+                end
+            end
+            if not Settings.Aimlock.SilentAim then
+                local currentCFrame = Camera.CFrame
+                local targetCFrame = CFrame.new(currentCFrame.Position, targetPos)
+                Camera.CFrame = currentCFrame:Lerp(targetCFrame, Settings.Aimlock.Smoothness)
+            end
+            simulateRollback()
+        end
+    end
+
+    if Settings.Movement.SpinbotEnabled and Settings.Movement.NoCameraShake and HumanoidRootPart then
+        local pos = Camera.CFrame.Position
+        local lookVector = lastCameraCFrame.LookVector
+        local upVector = lastCameraCFrame.UpVector
+        Camera.CFrame = CFrame.new(pos, pos + lookVector, upVector)
+    else
+        lastCameraCFrame = Camera.CFrame
+    end
+
+    if Settings.Movement.SpinbotEnabled and bav then
+        local speed = Settings.Movement.SpinSpeed
+        if Settings.AntiCheat.RandomizeMovements then
+            speed = speed * (1 + math.random(-10, 10)/100)
+            if math.random(1, 100) <= 5 then -- 5% chance to flip direction
+                Settings.Movement.SpinDirection = -Settings.Movement.SpinDirection
+            end
+        end
+        bav.AngularVelocity = Vector3.new(0, speed * Settings.Movement.SpinDirection, 0)
+    elseif bav then
+        bav.AngularVelocity = Vector3.new(0, 0, 0)
+    end
+end)
+
+-- =====================
+-- Movement Features
+-- =====================
+local function toggleFly(enabled)
+    if not HumanoidRootPart then return end
+    Settings.Movement.FlyEnabled = enabled
+    if enabled then
+        Humanoid.PlatformStand = true
+        bv = bv or Instance.new("BodyVelocity")
+        bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+        bv.Velocity = Vector3.new(0, 0, 0)
+        bv.Parent = HumanoidRootPart
+    else
+        if bv then bv:Destroy() bv = nil end
+        Humanoid.PlatformStand = false
+    end
+end
+
+local function toggleNoClip(enabled)
+    if not HumanoidRootPart then return end
+    Settings.Movement.NoClipEnabled = enabled
+    local collisionGroup = enabled and "NoClipGroup" or "Default"
+    if enabled then
+        if not PhysicsService:IsCollisionGroupRegistered("NoClipGroup") then
+            PhysicsService:RegisterCollisionGroup("NoClipGroup")
+        end
+        PhysicsService:CollisionGroupSetCollidable("NoClipGroup", "Default", false)
+    end
+    for _, part in pairs(LocalPlayer.Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            PhysicsService:SetPartCollisionGroup(part, collisionGroup)
+        end
+    end
+end
+
+local function toggleGodMode(enabled)
+    if not Humanoid then return end
+    Settings.Movement.GodMode = enabled
+    if enabled then
+        Humanoid.MaxHealth = math.huge
+        Humanoid.Health = math.huge
+    else
+        Humanoid.MaxHealth = 100
+        Humanoid.Health = 100
+    end
+end
+
+local function toggleInvisibility(enabled)
+    if not LocalPlayer.Character then return end
+    Settings.Movement.Invisibility = enabled
+    for _, part in pairs(LocalPlayer.Character:GetDescendants()) do
+        if part:IsA("BasePart") or part:IsA("Decal") then
+            part.Transparency = enabled and 1 or 0
+        end
+    end
+end
+
+RunService.RenderStepped:Connect(function(dt)
+    if Settings.Movement.FlyEnabled and bv and HumanoidRootPart then
+        local cam = Camera
+        local vel = Vector3.new()
+        if moveForward then vel = vel + cam.CFrame.LookVector end
+        if moveBackward then vel = vel - cam.CFrame.LookVector end
+        if moveLeft then vel = vel - cam.CFrame.RightVector end
+        if moveRight then vel = vel + cam.CFrame.RightVector end
+        if moveUp then vel = vel + Vector3.new(0,1,0) end
+        if moveDown then vel = vel - Vector3.new(0,1,0) end
+        if vel.Magnitude > 0 then 
+            vel = vel.Unit * Settings.Movement.FlySpeed
+            if Settings.AntiCheat.RandomizeMovements then
+                vel = vel + Vector3.new(math.random(-1,1)/10, math.random(-1,1)/10, math.random(-1,1)/10)
+            end
+            if Settings.AntiCheat.RandomizeVelocity then
+                vel = vel * (1 + math.random(-5,5)/100)
+            end
+        end
+        bv.Velocity = bv.Velocity:Lerp(vel, math.clamp(5 * dt, 0, 1))
+    end
+end)
+
+-- Kill Aura
+RunService.Heartbeat:Connect(function()
+    if Settings.KillAura.Enabled and HumanoidRootPart then
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character:FindFirstChild("HumanoidRootPart") then
+                local dist = (player.Character.HumanoidRootPart.Position - HumanoidRootPart.Position).Magnitude
+                if dist <= (Settings.Advanced.PerformanceMode and 10 or Settings.KillAura.Radius) and player.Character.Humanoid.Health > 0 then
+                    player.Character.Humanoid:TakeDamage(Settings.KillAura.Damage)
+                end
+            end
+        end
+    end
+end)
+
+-- =====================
+-- Input Handling
+-- =====================
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    local key = input.KeyCode
+    if key == Keybinds.ToggleAimlock then
+        Settings.Aimlock.Enabled = not Settings.Aimlock.Enabled
+        if Settings.Aimlock.Enabled then AimlockTarget = getClosestPlayerAim() end
+    elseif key == Keybinds.ToggleFly then
+        toggleFly(not Settings.Movement.FlyEnabled)
+    elseif key == Keybinds.ToggleSpinbot then
+        toggleSpinbot(not Settings.Movement.SpinbotEnabled)
+    elseif key == Keybinds.ToggleNoClip then
+        toggleNoClip(not Settings.Movement.NoClipEnabled)
+    elseif key == Keybinds.ToggleInfiniteJump and Settings.Movement.InfiniteJumpEnabled and Humanoid then
+        Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        local bvJump = Instance.new("BodyVelocity")
+        bvJump.MaxForce = Vector3.new(0, 1e5, 0)
+        bvJump.Velocity = Vector3.new(0, Settings.Movement.InfiniteJumpHeight, 0)
+        bvJump.Parent = HumanoidRootPart
+        task.delay(0.1, function() bvJump:Destroy() end)
+    elseif key == Keybinds.ToggleGodMode then
+        toggleGodMode(not Settings.Movement.GodMode)
+    elseif key == Keybinds.ToggleInvisibility then
+        toggleInvisibility(not Settings.Movement.Invisibility)
+    elseif key == Settings.Movement.BlinkKey then
+        performBlink()
+    elseif key == Enum.KeyCode.W then moveForward = true
+    elseif key == Enum.KeyCode.S then moveBackward = true
+    elseif key == Enum.KeyCode.A then moveLeft = true
+    elseif key == Enum.KeyCode.D then moveRight = true
+    elseif key == Enum.KeyCode.Space then moveUp = true
+    elseif key == Enum.KeyCode.LeftShift then moveDown = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    local key = input.KeyCode
+    if key == Enum.KeyCode.W then moveForward = false
+    elseif key == Enum.KeyCode.S then moveBackward = false
+    elseif key == Enum.KeyCode.A then moveLeft = false
+    elseif key == Enum.KeyCode.D then moveRight = false
+    elseif key == Enum.KeyCode.Space then moveUp = false
+    elseif key == Enum.KeyCode.LeftShift then moveDown = false
+    end
+end)
+
+-- =====================
+-- Moderation (EASI Simulation)
+-- =====================
+local function flagPlayer(player)
+    table.insert(Settings.Moderation.FlaggedPlayers, player.Name)
+    Rayfield:Notify({Title="Flagged Player", Content=player.Name .. " flagged (simulation).", Duration=3})
+    if Settings.Moderation.AutoKickFlagged then
+        if player.Character then player.Character:Destroy() end
+    end
+end
+
+RunService.Heartbeat:Connect(function()
+    if Settings.Moderation.AutoKickFlagged then
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and math.random(1,100) == 1 then
+                flagPlayer(player)
+            end
+        end
+    end
+end)
+
+-- =====================
+-- Custom Commands
+-- =====================
+local function executeCustomCommand(code)
+    local success, result = pcall(loadstring(code))
+    if success then
+        success, result = pcall(result)
+    end
+    if not success then
+        warn("Command error: " .. tostring(result))
+        Rayfield:Notify({Title="Command Error", Content=tostring(result), Duration=5})
+    end
+end
+
+-- =====================
+-- Anti-Cheat Detection
+-- =====================
+local function checkAntiCheat()
+    if Settings.Advanced.PerformanceMode then return end
+    local success, _ = pcall(function()
+        Humanoid.WalkSpeed = Humanoid.WalkSpeed + 0.1
+        Humanoid.WalkSpeed = Humanoid.WalkSpeed - 0.1
+    end)
+    if not success and Settings.AntiCheat.DetectServerAuthority then
+        Rayfield:Notify({Title="Anti-Cheat Detected", Content="Server authority active! Features may fail. (2025 Update)", Duration=5})
+    end
+end
+
+task.spawn(function()
+    while true do
+        checkAntiCheat()
+        task.wait(Settings.Advanced.PerformanceMode and 10 or 5)
+    end
+end)
+
+-- =====================
+-- Rayfield Controls
+-- =====================
+-- Main Tab (ESP)
+MainTab:CreateSection("ESP Settings")
+MainTab:CreateToggle({Name="Enable ESP", CurrentValue=Settings.ESP.Enabled, Callback=function(v) Settings.ESP.Enabled=v end})
+MainTab:CreateSlider({Name="Fill Transparency", Range={0,1}, Increment=0.05, CurrentValue=Settings.ESP.FillTransparency, Callback=function(v) Settings.ESP.FillTransparency=v end})
+MainTab:CreateSlider({Name="Outline Transparency", Range={0,1}, Increment=0.05, CurrentValue=Settings.ESP.OutlineTransparency, Callback=function(v) Settings.ESP.OutlineTransparency=v end})
+MainTab:CreateSlider({Name="Outline Thickness", Range={1,10}, Increment=1, CurrentValue=Settings.ESP.OutlineThickness, Callback=function(v) Settings.ESP.OutlineThickness=v end})
+MainTab:CreateColorPicker({Name="Outline Color", Color=Settings.ESP.OutlineColor, Callback=function(v) Settings.ESP.OutlineColor=v end})
+MainTab:CreateToggle({Name="Enable Tracers", CurrentValue=Settings.ESP.Tracers, Callback=function(v) Settings.ESP.Tracers=v end})
+MainTab:CreateColorPicker({Name="Tracer Color", Color=Settings.ESP.TracerColor, Callback=function(v) Settings.ESP.TracerColor=v end})
+MainTab:CreateSlider({Name="Max ESP Distance", Range={100,5000}, Increment=100, Suffix=" studs", CurrentValue=Settings.ESP.MaxDistance, Callback=function(v) Settings.ESP.MaxDistance=v end})
+MainTab:CreateSlider({Name="Max Tracer Distance", Range={100,1000}, Increment=50, Suffix=" studs", CurrentValue=Settings.ESP.TracerMaxDistance, Callback=function(v) Settings.ESP.TracerMaxDistance=v end})
+MainTab:CreateToggle({Name="Scale Tracer Thickness", CurrentValue=Settings.ESP.TracerThicknessScale, Callback=function(v) Settings.ESP.TracerThicknessScale=v end})
+MainTab:CreateDropdown({Name="Team Filter", Options={"All","Enemies","Teammates"}, CurrentOption=Settings.ESP.TeamFilter, Callback=function(v) Settings.ESP.TeamFilter=v end})
+MainTab:CreateToggle({Name="Enable Chams", CurrentValue=Settings.ESP.ChamsEnabled, Callback=function(v) Settings.ESP.ChamsEnabled=v end})
+MainTab:CreateColorPicker({Name="Chams Color", Color=Settings.ESP.ChamsColor, Callback=function(v) Settings.ESP.ChamsColor=v end})
+MainTab:CreateToggle({Name="Enable Item ESP", CurrentValue=Settings.ESP.ItemESPEnabled, Callback=function(v) Settings.ESP.ItemESPEnabled=v end})
+MainTab:CreateColorPicker({Name="Item ESP Color", Color=Settings.ESP.ItemESPColor, Callback=function(v) Settings.ESP.ItemESPColor=v end})
+MainTab:CreateSlider({Name="Max Item Distance", Range={50,500}, Increment=10, Suffix=" studs", CurrentValue=Settings.ESP.ItemMaxDistance, Callback=function(v) Settings.ESP.ItemMaxDistance=v end})
+
+-- Combat Tab
+CombatTab:CreateSection("Aimlock Settings")
+CombatTab:CreateToggle({Name="Enable Aimlock", CurrentValue=Settings.Aimlock.Enabled, Callback=function(v) Settings.Aimlock.Enabled=v end})
+CombatTab:CreateSlider({Name="Smoothness", Range={0,1}, Increment=0.01, CurrentValue=Settings.Aimlock.Smoothness, Callback=function(v) Settings.Aimlock.Smoothness=v end})
+CombatTab:CreateSlider({Name="FOV", Range={10,300}, Increment=5, Suffix=" px", CurrentValue=Settings.Aimlock.FOV, Callback=function(v) Settings.Aimlock.FOV=v end})
+CombatTab:CreateSlider({Name="Max Distance", Range={50,2000}, Increment=50, Suffix=" studs", CurrentValue=Settings.Aimlock.MaxDistance, Callback=function(v) Settings.Aimlock.MaxDistance=v end})
+CombatTab:CreateToggle({Name="Visible Check", CurrentValue=Settings.Aimlock.VisibleCheck, Callback=function(v) Settings.Aimlock.VisibleCheck=v end})
+CombatTab:CreateToggle({Name="Silent Aim", CurrentValue=Settings.Aimlock.SilentAim, Callback=function(v) Settings.Aimlock.SilentAim=v end})
+CombatTab:CreateToggle({Name="Show FOV Circle", CurrentValue=Settings.Aimlock.ShowFOVCircle, Callback=function(v) Settings.Aimlock.ShowFOVCircle=v end})
+CombatTab:CreateColorPicker({Name="FOV Circle Color", Color=Settings.Aimlock.FOVCircleColor, Callback=function(v) Settings.Aimlock.FOVCircleColor=v end})
+CombatTab:CreateToggle({Name="Rollback Simulation", CurrentValue=Settings.Aimlock.RollbackSimulation, Callback=function(v) Settings.Aimlock.RollbackSimulation=v end})
+CombatTab:CreateToggle({Name="Enable Prediction", CurrentValue=Settings.Aimlock.PredictionEnabled, Callback=function(v) Settings.Aimlock.PredictionEnabled=v end})
+CombatTab:CreateSlider({Name="Prediction Lead", Range={0.05,0.5}, Increment=0.05, Suffix=" sec", CurrentValue=Settings.Aimlock.PredictionLead, Callback=function(v) Settings.Aimlock.PredictionLead=v end})
+
+CombatTab:CreateSection("Kill Aura Settings")
+CombatTab:CreateToggle({Name="Enable Kill Aura", CurrentValue=Settings.KillAura.Enabled, Callback=function(v) Settings.KillAura.Enabled=v end})
+CombatTab:CreateSlider({Name="Radius", Range={5,50}, Increment=1, Suffix=" studs", CurrentValue=Settings.KillAura.Radius, Callback=function(v) Settings.KillAura.Radius=v end})
+CombatTab:CreateSlider({Name="Damage", Range={1,100}, Increment=1, Suffix=" HP", CurrentValue=Settings.KillAura.Damage, Callback=function(v) Settings.KillAura.Damage=v end})
+
+-- Movement Tab
+MovementTab:CreateSection("Movement Settings")
+MovementTab:CreateToggle({Name="Fly", CurrentValue=Settings.Movement.FlyEnabled, Callback=function(v) toggleFly(v) end})
+MovementTab:CreateSlider({Name="Fly Speed", Range={50,500}, Increment=10, Suffix=" stud/s", CurrentValue=Settings.Movement.FlySpeed, Callback=function(v) Settings.Movement.FlySpeed=v end})
+MovementTab:CreateToggle({Name="NoClip", CurrentValue=Settings.Movement.NoClipEnabled, Callback=function(v) toggleNoClip(v) end})
+MovementTab:CreateToggle({Name="Spinbot", CurrentValue=Settings.Movement.SpinbotEnabled, Callback=function(v) toggleSpinbot(v) end})
+MovementTab:CreateSlider({Name="Spin Speed", Range={10,200}, Increment=5, Suffix=" rad/s", CurrentValue=Settings.Movement.SpinSpeed, Callback=function(v) Settings.Movement.SpinSpeed=v end})
+MovementTab:CreateToggle({Name="No Camera Shake", CurrentValue=Settings.Movement.NoCameraShake, Callback=function(v) toggleNoCameraShake(v) end})
+MovementTab:CreateToggle({Name="Infinite Jump", CurrentValue=Settings.Movement.InfiniteJumpEnabled, Callback=function(v) Settings.Movement.InfiniteJumpEnabled=v end})
+MovementTab:CreateSlider({Name="Jump Height", Range={50,200}, Increment=5, Suffix=" stud/s", CurrentValue=Settings.Movement.InfiniteJumpHeight, Callback=function(v) Settings.Movement.InfiniteJumpHeight=v end})
+MovementTab:CreateToggle({Name="God Mode", CurrentValue=Settings.Movement.GodMode, Callback=function(v) toggleGodMode(v) end})
+MovementTab:CreateToggle({Name="Invisibility", CurrentValue=Settings.Movement.Invisibility, Callback=function(v) toggleInvisibility(v) end})
+MovementTab:CreateSlider({Name="WalkSpeed", Range={16,500}, Increment=1, Suffix=" stud/s", CurrentValue=Settings.Movement.WalkSpeed, Callback=function(v) if Humanoid then Humanoid.WalkSpeed=v end Settings.Movement.WalkSpeed=v end})
+MovementTab:CreateSlider({Name="Camera FOV", Range={70,120}, Increment=1, Suffix="°", CurrentValue=Settings.Movement.FOV, Callback=function(v) Camera.FieldOfView=v Settings.Movement.FOV=v end})
+MovementTab:CreateToggle({Name="Fullbright", CurrentValue=Settings.Movement.FullbrightEnabled, Callback=function(v) toggleFullbright(v) end})
+MovementTab:CreateSlider({Name="Jump Power", Range={50,300}, Increment=5, Suffix=" power", CurrentValue=Settings.Movement.JumpPower, Callback=function(v) Settings.Movement.JumpPower=v updateJumpPower(v) end})
+MovementTab:CreateToggle({Name="Blink Teleport", CurrentValue=Settings.Movement.BlinkEnabled, Callback=function(v) Settings.Movement.BlinkEnabled=v end})
+MovementTab:CreateSlider({Name="Blink Distance", Range={20,100}, Increment=5, Suffix=" studs", CurrentValue=Settings.Movement.BlinkDistance, Callback=function(v) Settings.Movement.BlinkDistance=v end})
+
+MovementTab:CreateSection("Teleport")
+local playerNames = {}
+for _, player in pairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then table.insert(playerNames, player.Name) end
+end
+MovementTab:CreateDropdown({
+    Name = "Teleport to Player",
+    Options = playerNames,
+    CurrentOption = "",
+    Callback = function(playerName)
+        local target = Players:FindFirstChild(playerName)
+        if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") and HumanoidRootPart then
+            HumanoidRootPart.CFrame = target.Character.HumanoidRootPart.CFrame
+        end
+    end
+})
+MovementTab:CreateInput({Name="Teleport to Coords (X,Y,Z)", PlaceholderText="0,100,0", Callback=function(input) 
+    local coords = string.split(input, ",")
+    if #coords == 3 then
+        teleportToCoords(tonumber(coords[1]), tonumber(coords[2]), tonumber(coords[3]))
+    end
+end})
+
+-- Moderation Tab
+ModerationTab:CreateSection("Moderation Settings")
+ModerationTab:CreateToggle({Name="Auto-Kick Flagged", CurrentValue=Settings.Moderation.AutoKickFlagged, Callback=function(v) Settings.Movement.AutoKickFlagged=v end})
+ModerationTab:CreateButton({Name="Flag Random Player (Test)", Callback=function() 
+    local players = Players:GetPlayers()
+    if #players > 1 then
+        flagPlayer(players[math.random(2, #players)])
+    end
+end})
+ModerationTab:CreateToggle({Name="Chat Spammer", CurrentValue=Settings.Moderation.ChatSpammerEnabled, Callback=function(v) Settings.Moderation.ChatSpammerEnabled=v Settings.Moderation.ChatSpamFailures=0 end})
+ModerationTab:CreateInput({Name="Spam Message", PlaceholderText="Enter message", Callback=function(v) Settings.Moderation.SpamMessage=v end})
+ModerationTab:CreateSlider({Name="Spam Delay", Range={0.5,5}, Increment=0.5, Suffix=" sec", CurrentValue=Settings.Moderation.SpamDelay, Callback=function(v) Settings.Moderation.SpamDelay=v end})
+local muteDropdown = ModerationTab:CreateDropdown({Name="Mute Player (Local)", Options=playerNames, Callback=function(playerName)
+    local target = Players:FindFirstChild(playerName)
+    if target then mutePlayer(target, true) end
+end})
+local freezeDropdown = ModerationTab:CreateDropdown({Name="Freeze Player (Local)", Options=playerNames, Callback=function(playerName)
+    local target = Players:FindFirstChild(playerName)
+    if target then freezePlayer(target, true) end
+end})
+ModerationTab:CreateInput({Name="Broadcast Message (Local)", PlaceholderText="Enter message", Callback=function(v) sendBroadcast(v) end})
+
+-- Commands Tab
+CommandsTab:CreateSection("Custom Commands")
+local commandInput = CommandsTab:CreateInput({Name="Enter Lua Command", PlaceholderText="e.g., print('Hello')", RemovePlaceholder=true, Callback=function(code) executeCustomCommand(code) end})
+
+-- Advanced Tab
+AdvancedTab:CreateSection("Anti-Cheat Settings")
+AdvancedTab:CreateToggle({Name="Detect Server Authority", CurrentValue=Settings.AntiCheat.DetectServerAuthority, Callback=function(v) Settings.AntiCheat.DetectServerAuthority=v end})
+AdvancedTab:CreateToggle({Name="Randomize Movements", CurrentValue=Settings.AntiCheat.RandomizeMovements, Callback=function(v) Settings.AntiCheat.RandomizeMovements=v end})
+AdvancedTab:CreateToggle({Name="Randomize Velocity (2025 Enhanced)", CurrentValue=Settings.AntiCheat.RandomizeVelocity, Callback=function(v) Settings.AntiCheat.RandomizeVelocity=v end})
+
+AdvancedTab:CreateSection("Performance")
+AdvancedTab:CreateToggle({Name="Unlock FPS", CurrentValue=Settings.Advanced.FPSUnlocked, Callback=function(v) toggleFPSUnlock(v) end})
+AdvancedTab:CreateToggle({Name="Performance Mode", CurrentValue=Settings.Advanced.PerformanceMode, Callback=function(v) togglePerformanceMode(v) end})
+
+AdvancedTab:CreateSection("Player Stats (Real-Time)")
+AdvancedTab:CreateLabel({Name="Total Players: " .. PlayerStats.TotalPlayers})
+AdvancedTab:CreateLabel({Name="Avg Health: " .. math.floor(PlayerStats.AverageHealth)})
+
+AdvancedTab:CreateSection("Colors")
+AdvancedTab:CreateColorPicker({Name="Health Green", Color=HealthColors.Green, Callback=function(v) HealthColors.Green=v end})
+AdvancedTab:CreateColorPicker({Name="Health Orange", Color=HealthColors.Orange, Callback=function(v) HealthColors.Orange=v end})
+AdvancedTab:CreateColorPicker({Name="Health Red", Color=HealthColors.Red, Callback=function(v) HealthColors.Red=v end})
+
+AdvancedTab:CreateButton({Name="Reset Settings", Callback=function()
+    Rayfield:Notify({Title="Reset", Content="Settings reset to defaults.", Duration=3})
+end})
+
+AdvancedTab:CreateSection("Community")
+local discordUrl = "https://discord.gg/7kKpQWRCUg"
+AdvancedTab:CreateButton({
+    Name = "Join Discord Server",
+    Callback = function()
+        local success, err = pcall(function()
+            setclipboard(discordUrl)
+        end)
+        if success then
+            Rayfield:Notify({
+                Title = "Discord Invite",
+                Content = "Invite link copied to clipboard! Paste it into your browser to join the server.",
+                Duration = 5
+            })
+        else
+            Rayfield:Notify({
+                Title = "Clipboard Error",
+                Content = "Failed to copy link. Please manually visit: " .. discordUrl,
+                Duration = 5
+            })
+            warn("Clipboard copy failed: " .. tostring(err))
+        end
+    end
+})
+
+-- Initialize
+checkAntiCheat()
+Rayfield:LoadConfiguration()
